@@ -9,6 +9,7 @@ sealed class Either<A, B> {
         is Left -> Left(f(this.value))
         is Right -> Right(this.value)
     }
+
     fun <C> mapRight(f: (B) -> C): Either<A, C> = when (this) {
         is Left -> Left(this.value)
         is Right -> Right(f(this.value))

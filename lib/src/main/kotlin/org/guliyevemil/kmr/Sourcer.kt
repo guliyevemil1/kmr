@@ -28,10 +28,11 @@ class CollectionSourcer<T>(
 
 fun <T : Any> CoroutineScope.source(
     sourcer: Sourcer<T>,
+    name: String? = null,
     size: Int = DEFAULT_SIZE,
     capacity: Int = DEFAULT_CAPACITY,
 ): ParallelChannel<T> {
-    val chan = ParallelChannel<T>(this, size, capacity)
+    val chan = ParallelChannel<T>(name, size, capacity, this)
     launch {
         sourcer.source.collect { chan.send(it) }
         chan.close()
@@ -42,23 +43,25 @@ fun <T : Any> CoroutineScope.source(
 fun <A : Any, B : Any> CoroutineScope.combine2(
     ch1: ParallelChannel<A>,
     ch2: ParallelChannel<B>,
+    name: String? = null,
     size: Int = DEFAULT_SIZE,
     capacity: Int = DEFAULT_CAPACITY,
 ): ParallelChannel<Either<A, B>> {
-    val out = ParallelChannel<Either<A, B>>(this, size, capacity)
-    launch { out.reroute(out = ch1.map { Either.Left(it) }) }
-    launch { out.reroute(out = ch2.map { Either.Right(it) }) }
+    val out = ParallelChannel<Either<A, B>>(name, size, capacity, this)
+    launch { ch1.map<Either<A, B>> { Either.Left(it) }.reroute(out) }
+    launch { ch2.map<Either<A, B>> { Either.Right(it) }.reroute(out) }
     return out
 }
 
 fun <T : Any> CoroutineScope.combine(
     vararg chans: ParallelChannel<T>,
+    name: String? = null,
     size: Int = DEFAULT_SIZE,
     capacity: Int = DEFAULT_CAPACITY,
 ): ParallelChannel<T> {
-    val out = ParallelChannel<T>(this, size, capacity)
+    val out = ParallelChannel<T>(name, size, capacity, this)
     for (s in chans) {
-        launch { out.reroute(out = s) }
+        launch { s.reroute(out) }
     }
     return out
 }

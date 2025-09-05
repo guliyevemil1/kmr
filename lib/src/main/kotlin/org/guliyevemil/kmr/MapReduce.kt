@@ -10,22 +10,23 @@ const val DEFAULT_SIZE = 10
 const val DEFAULT_CAPACITY = 10
 
 class ParallelChannel<T : Any> internal constructor(
-    private val scope: CoroutineScope,
+    val name: String? = null,
     val size: Int,
-    val capacity: Int
+    val capacity: Int,
+    private val scope: CoroutineScope,
 ) {
-
-    private fun <U : Any> newParallelChannel(
-        scope: CoroutineScope = this.scope,
-        size: Int = this.size,
-        capacity: Int = this.capacity,
-    ) = ParallelChannel<U>(scope, size, capacity)
-
-    val channels: List<Channel<T>> = List<Channel<T>>(size) { Channel(capacity = capacity) }
-
     init {
         require(size > 0) { "size must be greater than 0" }
     }
+
+    val channels: List<Channel<T>> = List<Channel<T>>(size) { Channel(capacity = capacity) }
+
+    private fun <U : Any> newParallelChannel(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        scope: CoroutineScope = this.scope,
+    ) = ParallelChannel<U>(name, size, capacity, scope)
 
     internal suspend fun send(data: T) = send(data, data.hashCode())
 
@@ -37,53 +38,74 @@ class ParallelChannel<T : Any> internal constructor(
         channels[n].send(data)
     }
 
-    fun <U : Any> map(name: String? = null, f: suspend (T) -> U): ParallelChannel<U> =
-        map(name) { _, input -> f(input) }
+    fun <U : Any> map(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (T) -> U,
+    ): ParallelChannel<U> =
+        map(name, size, capacity) { _, input -> f(input) }
 
-    fun <U : Any> map(name: String? = null, f: suspend (Int, T) -> U): ParallelChannel<U> {
-        val out = newParallelChannel<U>()
-        val jobs = channels.mapIndexed { shard, ch ->
-            scope.launch {
-                for (input in ch) {
-                    out.send(f(shard, input))
+    fun <U : Any> map(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (Int, T) -> U,
+    ): ParallelChannel<U> {
+        val out = newParallelChannel<U>(name, size, capacity)
+        applyRunners { shard, ch ->
+            for (input in ch) {
+                out.send(f(shard, input))
+            }
+        }
+        return out
+    }
+
+    fun <U : Any> batchMap(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (List<T>) -> U,
+    ): ParallelChannel<U> =
+        batchMap(name, size, capacity) { _, input -> f(input) }
+
+    fun <U : Any> batchMap(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (Int, List<T>) -> U,
+    ): ParallelChannel<U> {
+        val out: ParallelChannel<U> = newParallelChannel(name = name, size = size, capacity = capacity)
+        applyRunners { chard, ch ->
+            val batch = mutableListOf<T>()
+            while (true) {
+                try {
+                    readBatch(batch, ch)
+                    out.send(f(chard, batch))
+                } catch (_: Exception) {
+                    break
                 }
             }
         }
-        scope.launch {
-            jobs.forEach { it.join() }
-            out.close()
-        }
         return out
     }
 
-    fun <U : Any> batchMap(name: String? = null, f: suspend (List<T>) -> U): ParallelChannel<U> =
-        batchMap(name) { _, input -> f(input) }
+    fun <U : Any> reduce(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (T) -> U,
+    ): ParallelChannel<U> =
+        map(name, size, capacity) { _, input -> f(input) }
 
-    fun <U : Any> batchMap(name: String? = null, f: suspend (Int, List<T>) -> U): ParallelChannel<U> {
-        val out: ParallelChannel<U> = newParallelChannel()
-        val jobs: List<Job> = channels.mapIndexed { chard, ch ->
-            scope.launch {
-                val batch = mutableListOf<T>()
-                while (true) {
-                    try {
-                        readBatch(batch, ch)
-                        out.send(f(chard, batch))
-                    } catch (_: Exception) {
-                        break
-                    }
-                }
-            }
-        }
-        scope.launch {
-            jobs.forEach { it.join() }
-            out.close()
-        }
-        return out
-    }
-
-    suspend fun <U : Any> multiMap2(name: String? = null, f: suspend (T) -> Tuple2<U>): Tuple2<ParallelChannel<U>> {
-        val out = Tuple2 { newParallelChannel<U>() }
-        channels.forEach { ch ->
+    fun <U : Any> multiMap2(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (T) -> Tuple2<U>,
+    ): Tuple2<ParallelChannel<U>> {
+        val out = Tuple2 { newParallelChannel<U>(name, size, capacity) }
+        applyRunners { ch ->
             for (v in ch) {
                 out.apply(f(v)) { runBlocking { send(it) } }
             }
@@ -91,9 +113,14 @@ class ParallelChannel<T : Any> internal constructor(
         return out
     }
 
-    suspend fun <U : Any> multiMap3(name: String? = null, f: (T) -> Tuple3<U>): Tuple3<ParallelChannel<U>> {
-        val out = Tuple3 { newParallelChannel<U>() }
-        channels.forEach { ch ->
+    fun <U : Any> multiMap3(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: (T) -> Tuple3<U>,
+    ): Tuple3<ParallelChannel<U>> {
+        val out = Tuple3 { newParallelChannel<U>(name, size, capacity) }
+        applyRunners { ch ->
             for (v in ch) {
                 out.apply(f(v)) { runBlocking { send(it) } }
             }
@@ -101,9 +128,14 @@ class ParallelChannel<T : Any> internal constructor(
         return out
     }
 
-    suspend fun <U : Any> multiMap4(name: String? = null, f: (T) -> Tuple4<U>): Tuple4<ParallelChannel<U>> {
-        val out = Tuple4 { newParallelChannel<U>() }
-        channels.forEach { ch ->
+    fun <U : Any> multiMap4(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: (T) -> Tuple4<U>,
+    ): Tuple4<ParallelChannel<U>> {
+        val out = Tuple4 { newParallelChannel<U>(name, size, capacity) }
+        applyRunners { ch ->
             for (v in ch) {
                 out.apply(f(v)) { runBlocking { send(it) } }
             }
@@ -111,9 +143,14 @@ class ParallelChannel<T : Any> internal constructor(
         return out
     }
 
-    suspend fun <U : Any> multiMap5(name: String? = null, f: (T) -> Tuple5<U>): Tuple5<ParallelChannel<U>> {
-        val out = Tuple5 { newParallelChannel<U>() }
-        channels.forEach { ch ->
+    fun <U : Any> multiMap5(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: (T) -> Tuple5<U>,
+    ): Tuple5<ParallelChannel<U>> {
+        val out = Tuple5 { newParallelChannel<U>(name, size, capacity) }
+        applyRunners { ch ->
             for (v in ch) {
                 out.apply(f(v)) { runBlocking { send(it) } }
             }
@@ -125,7 +162,7 @@ class ParallelChannel<T : Any> internal constructor(
         if (size == this.size && capacity == this.capacity) {
             return this
         }
-        val out: ParallelChannel<T> = newParallelChannel(size = size, capacity = capacity)
+        val out: ParallelChannel<T> = newParallelChannel(name, size, capacity)
         val jobs = channels.map { ch ->
             scope.launch {
                 for (value in ch) {
@@ -139,6 +176,26 @@ class ParallelChannel<T : Any> internal constructor(
         }
         return out
     }
+
+    fun split(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+    ): Tuple2<ParallelChannel<T>> = multiMap2(
+        name = name,
+        size = size,
+        capacity = capacity,
+    ) { t -> Tuple2 { t } }
+
+    fun split3(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+    ): Tuple3<ParallelChannel<T>> = multiMap3(
+        name = name,
+        size = size,
+        capacity = capacity,
+    ) { t -> Tuple3 { t } }
 
     private suspend fun readBatch(out: MutableList<T>, ch: Channel<T>) {
         out.clear()
@@ -154,16 +211,28 @@ class ParallelChannel<T : Any> internal constructor(
     }
 
     fun sink(name: String? = null) {
-        channels.forEach { ch ->
-            scope.launch {
-                while (true) {
-                    try {
-                        ch.receive()
-                    } catch (_: Exception) {
-                        break
-                    }
+        applyRunners { ch ->
+            while (true) {
+                try {
+                    ch.receive()
+                } catch (_: Exception) {
+                    break
                 }
             }
+        }
+    }
+
+    private fun applyRunners(runner: suspend (Channel<T>) -> Unit) {
+        applyRunners { _, ch -> runner(ch) }
+    }
+
+    private fun applyRunners(runner: suspend (Int, Channel<T>) -> Unit) {
+        val jobs: List<Job> = channels.mapIndexed { shard, ch ->
+            scope.launch { runner(shard, ch) }
+        }
+        scope.launch {
+            jobs.forEach { it.join() }
+            close()
         }
     }
 
@@ -171,9 +240,16 @@ class ParallelChannel<T : Any> internal constructor(
         channels.forEach { it.close() }
     }
 
-    fun reroute(name: String? = null, out: ParallelChannel<T>) {
-        for (ch in channels) {
-            scope.launch {
+    fun reroute(
+        out: ParallelChannel<T>,
+        name: String? = null,
+    ) {
+        applyRunners { shard, ch ->
+            if (size == out.size) {
+                for (value in ch) {
+                    out.send(value, shard)
+                }
+            } else {
                 for (value in ch) {
                     out.send(value)
                 }
@@ -181,4 +257,3 @@ class ParallelChannel<T : Any> internal constructor(
         }
     }
 }
-

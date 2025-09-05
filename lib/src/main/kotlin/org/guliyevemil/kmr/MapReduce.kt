@@ -39,8 +39,12 @@ class ParallelChannel<T : Any> internal constructor(
         channels[n].send(data)
     }
 
-    suspend fun send(inputShard: Int, f: Flow<T>, first: ParallelChannel<T>, vararg out: ParallelChannel<T>) {
-        val shard: Int? = if (this.size == first.size && inputShard >= 0) {
+    internal suspend fun sendFlow(f: Flow<T>) {
+        f.collect { send(data = it) }
+    }
+
+    suspend fun send(inputShard: Int? = null, f: Flow<T>, first: ParallelChannel<T>, vararg out: ParallelChannel<T>) {
+        val shard: Int? = if (this.size == first.size && inputShard != null && inputShard >= 0) {
             inputShard
         } else {
             null
@@ -74,6 +78,29 @@ class ParallelChannel<T : Any> internal constructor(
         return out
     }
 
+    fun <U : Any> flatMap(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (T) -> Flow<U>,
+    ): ParallelChannel<U> =
+        flatMap(name, size, capacity) { _, input -> f(input) }
+
+    fun <U : Any> flatMap(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (Int, T) -> Flow<U>,
+    ): ParallelChannel<U> {
+        val out = newParallelChannel<U>(name, size, capacity)
+        applyRunners(out) { shard, ch ->
+            for (input in ch) {
+                out.sendFlow(f(shard, input))
+            }
+        }
+        return out
+    }
+
     fun filter(
         name: String? = null,
         size: Int = this.size,
@@ -87,18 +114,16 @@ class ParallelChannel<T : Any> internal constructor(
         size: Int = this.size,
         capacity: Int = this.capacity,
         f: suspend (Int, T) -> Boolean,
-    ): ParallelChannel<T> {
-        val out = newParallelChannel<T>(name, size, capacity)
-        applyRunners(out) { shard, ch ->
-            send(shard, flow {
-                for (input in ch) {
-                    if (f(shard, input)) {
-                        emit(input)
-                    }
-                }
-            }, out)
+    ): ParallelChannel<T> = flatMap(
+        name,
+        size,
+        capacity,
+    ) { shard, input ->
+        flow {
+            if (f(shard, input)) {
+                emit(input)
+            }
         }
-        return out
     }
 
     fun <U : Any> batchMap(

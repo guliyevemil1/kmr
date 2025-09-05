@@ -13,11 +13,11 @@ class FlowSourcer<T>(f: Flow<T>) : Sourcer<T> {
     override val source: Flow<T> = f
 }
 
-class CollectionSourcer<T>(
+class IterableSourcer<T>(
+    collection: Iterable<T>,
     name: String? = null,
-    collection: Collection<T>,
 ) : Sourcer<T> {
-    constructor(name: String? = null, vararg l: T) : this(name, l.toList())
+    constructor(vararg l: T, name: String? = null) : this(l.toList(), name)
 
     override val source: Flow<T> = flow {
         for (v in collection) {

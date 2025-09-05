@@ -61,6 +61,39 @@ class ParallelChannel<T : Any> internal constructor(
         return out
     }
 
+    fun filter(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (T) -> Boolean,
+    ): ParallelChannel<T> =
+        filter(name, size, capacity) { _, input -> f(input) }
+
+    fun filter(
+        name: String? = null,
+        size: Int = this.size,
+        capacity: Int = this.capacity,
+        f: suspend (Int, T) -> Boolean,
+    ): ParallelChannel<T> {
+        val out = newParallelChannel<T>(name, size, capacity)
+        applyRunners { shard, ch ->
+            if (size == out.size) {
+                for (input in ch) {
+                    if (f(shard, input)) {
+                        out.send(input, shard)
+                    }
+                }
+            } else {
+                for (input in ch) {
+                    if (f(shard, input)) {
+                        out.send(input)
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     fun <U : Any> batchMap(
         name: String? = null,
         size: Int = this.size,

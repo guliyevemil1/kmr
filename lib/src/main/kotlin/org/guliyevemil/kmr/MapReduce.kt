@@ -3,8 +3,11 @@ package org.guliyevemil.kmr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 const val DEFAULT_SIZE = 10
 const val DEFAULT_CAPACITY = 10
@@ -28,14 +31,24 @@ class ParallelChannel<T : Any> internal constructor(
         scope: CoroutineScope = this.scope,
     ) = ParallelChannel<U>(name, size, capacity, scope)
 
-    internal suspend fun send(data: T) = send(data, data.hashCode())
-
-    internal suspend fun send(data: T, shard: Int) {
-        var n = shard % channels.size
+    internal suspend fun send(shard: Int? = null, data: T) {
+        var n = (shard ?: data.hashCode()) % channels.size
         while (n < 0) {
             n += channels.size
         }
         channels[n].send(data)
+    }
+
+    suspend fun send(inputShard: Int, f: Flow<T>, first: ParallelChannel<T>, vararg out: ParallelChannel<T>) {
+        val shard: Int? = if (this.size == first.size && inputShard >= 0) {
+            inputShard
+        } else {
+            null
+        }
+        f.collect { data ->
+            first.send(shard, data)
+            out.forEach { it.send(shard, data) }
+        }
     }
 
     fun <U : Any> map(
@@ -53,9 +66,9 @@ class ParallelChannel<T : Any> internal constructor(
         f: suspend (Int, T) -> U,
     ): ParallelChannel<U> {
         val out = newParallelChannel<U>(name, size, capacity)
-        applyRunners { shard, ch ->
+        applyRunners(out) { shard, ch ->
             for (input in ch) {
-                out.send(f(shard, input))
+                out.send(data = f(shard, input))
             }
         }
         return out
@@ -76,20 +89,14 @@ class ParallelChannel<T : Any> internal constructor(
         f: suspend (Int, T) -> Boolean,
     ): ParallelChannel<T> {
         val out = newParallelChannel<T>(name, size, capacity)
-        applyRunners { shard, ch ->
-            if (size == out.size) {
+        applyRunners(out) { shard, ch ->
+            send(shard, flow {
                 for (input in ch) {
                     if (f(shard, input)) {
-                        out.send(input, shard)
+                        emit(input)
                     }
                 }
-            } else {
-                for (input in ch) {
-                    if (f(shard, input)) {
-                        out.send(input)
-                    }
-                }
-            }
+            }, out)
         }
         return out
     }
@@ -109,12 +116,11 @@ class ParallelChannel<T : Any> internal constructor(
         f: suspend (Int, List<T>) -> U,
     ): ParallelChannel<U> {
         val out: ParallelChannel<U> = newParallelChannel(name = name, size = size, capacity = capacity)
-        applyRunners { chard, ch ->
-            val batch = mutableListOf<T>()
+        applyRunners(out) { chard, ch ->
+            val buffer = mutableListOf<T>()
             while (true) {
                 try {
-                    readBatch(batch, ch)
-                    out.send(f(chard, batch))
+                    out.send(data = f(chard, readBatch(buffer, ch)))
                 } catch (_: Exception) {
                     break
                 }
@@ -123,72 +129,40 @@ class ParallelChannel<T : Any> internal constructor(
         return out
     }
 
-    fun <U : Any> reduce(
+    fun forEach(
         name: String? = null,
         size: Int = this.size,
         capacity: Int = this.capacity,
-        f: suspend (T) -> U,
-    ): ParallelChannel<U> =
-        map(name, size, capacity) { _, input -> f(input) }
+        f: suspend (T) -> Unit,
+    ): ParallelChannel<T> =
+        forEach(name, size, capacity) { _, input -> f(input) }
 
-    fun <U : Any> multiMap2(
+    fun forEach(
         name: String? = null,
         size: Int = this.size,
         capacity: Int = this.capacity,
-        f: suspend (T) -> Tuple2<U>,
-    ): Tuple2<ParallelChannel<U>> {
-        val out = Tuple2 { newParallelChannel<U>(name, size, capacity) }
-        applyRunners { ch ->
-            for (v in ch) {
-                out.apply(f(v)) { runBlocking { send(it) } }
+        f: suspend (Int, T) -> Unit,
+    ): ParallelChannel<T> {
+        val out = newParallelChannel<T>(name, size, capacity)
+        applyRunners(out) { shard, ch ->
+            for (input in ch) {
+                f(shard, input)
+                out.send(shard, input)
             }
         }
         return out
     }
 
-    fun <U : Any> multiMap3(
+    fun reduce(
+        initialValue: T,
         name: String? = null,
         size: Int = this.size,
         capacity: Int = this.capacity,
-        f: (T) -> Tuple3<U>,
-    ): Tuple3<ParallelChannel<U>> {
-        val out = Tuple3 { newParallelChannel<U>(name, size, capacity) }
-        applyRunners { ch ->
-            for (v in ch) {
-                out.apply(f(v)) { runBlocking { send(it) } }
-            }
-        }
-        return out
-    }
-
-    fun <U : Any> multiMap4(
-        name: String? = null,
-        size: Int = this.size,
-        capacity: Int = this.capacity,
-        f: (T) -> Tuple4<U>,
-    ): Tuple4<ParallelChannel<U>> {
-        val out = Tuple4 { newParallelChannel<U>(name, size, capacity) }
-        applyRunners { ch ->
-            for (v in ch) {
-                out.apply(f(v)) { runBlocking { send(it) } }
-            }
-        }
-        return out
-    }
-
-    fun <U : Any> multiMap5(
-        name: String? = null,
-        size: Int = this.size,
-        capacity: Int = this.capacity,
-        f: (T) -> Tuple5<U>,
-    ): Tuple5<ParallelChannel<U>> {
-        val out = Tuple5 { newParallelChannel<U>(name, size, capacity) }
-        applyRunners { ch ->
-            for (v in ch) {
-                out.apply(f(v)) { runBlocking { send(it) } }
-            }
-        }
-        return out
+        groupBy: suspend (T) -> String,
+        combine: suspend (T, T) -> T,
+    ): ParallelChannel<T> {
+        val out: ParallelChannel<T> = newParallelChannel(name, size, capacity)
+        TODO()
     }
 
     fun resize(name: String? = null, size: Int = this.size, capacity: Int = this.capacity): ParallelChannel<T> {
@@ -196,17 +170,7 @@ class ParallelChannel<T : Any> internal constructor(
             return this
         }
         val out: ParallelChannel<T> = newParallelChannel(name, size, capacity)
-        val jobs = channels.map { ch ->
-            scope.launch {
-                for (value in ch) {
-                    out.send(value)
-                }
-            }
-        }
-        scope.launch {
-            jobs.forEach { it.join() }
-            out.close()
-        }
+        applyRunners(out) { _, ch -> send(-1, ch.receiveAsFlow(), out) }
         return out
     }
 
@@ -214,23 +178,27 @@ class ParallelChannel<T : Any> internal constructor(
         name: String? = null,
         size: Int = this.size,
         capacity: Int = this.capacity,
-    ): Tuple2<ParallelChannel<T>> = multiMap2(
-        name = name,
-        size = size,
-        capacity = capacity,
-    ) { t -> Tuple2 { t } }
+    ): Tuple2<ParallelChannel<T>> {
+        val out = Tuple2 { newParallelChannel<T>(name, size, capacity) }
+        applyRunners(out.first, out.second) { shard, ch ->
+            send(shard, ch.receiveAsFlow(), out.first, out.second)
+        }
+        return out
+    }
 
     fun split3(
         name: String? = null,
         size: Int = this.size,
         capacity: Int = this.capacity,
-    ): Tuple3<ParallelChannel<T>> = multiMap3(
-        name = name,
-        size = size,
-        capacity = capacity,
-    ) { t -> Tuple3 { t } }
+    ): Tuple3<ParallelChannel<T>> {
+        val out = Tuple3 { newParallelChannel<T>(name, size, capacity) }
+        applyRunners(out.first, out.second, out.third) { shard, ch ->
+            send(shard, ch.receiveAsFlow(), out.first, out.second, out.third)
+        }
+        return out
+    }
 
-    private suspend fun readBatch(out: MutableList<T>, ch: Channel<T>) {
+    private suspend fun readBatch(out: MutableList<T>, ch: Channel<T>): List<T> {
         out.clear()
         // wait until we have at least one
         out.add(ch.receive())
@@ -241,52 +209,46 @@ class ParallelChannel<T : Any> internal constructor(
             }
             out.add(result.getOrNull() ?: break)
         }
+        return out.toList()
     }
 
-    fun sink(name: String? = null) {
-        applyRunners { ch ->
+    fun sink() {
+        applyRunners<Unit> { shard, ch ->
             while (true) {
                 try {
                     ch.receive()
-                } catch (_: Exception) {
+                } catch (_: ClosedReceiveChannelException) {
                     break
                 }
             }
         }
     }
 
-    private fun applyRunners(runner: suspend (Channel<T>) -> Unit) {
-        applyRunners { _, ch -> runner(ch) }
-    }
-
-    private fun applyRunners(runner: suspend (Int, Channel<T>) -> Unit) {
+    private fun <U : Any> applyRunners(
+        vararg out: ParallelChannel<U>,
+        runner: suspend (Int, Channel<T>) -> Unit,
+    ) {
         val jobs: List<Job> = channels.mapIndexed { shard, ch ->
             scope.launch { runner(shard, ch) }
         }
-        scope.launch {
-            jobs.forEach { it.join() }
-            close()
+        if (out.isNotEmpty()) {
+            scope.launch {
+                jobs.forEach { it.join() }
+                out.forEach { it.close() }
+            }
         }
     }
 
     fun close() {
-        channels.forEach { it.close() }
+        channels.forEach { require(it.close()) }
     }
 
     fun reroute(
         out: ParallelChannel<T>,
         name: String? = null,
     ) {
-        applyRunners { shard, ch ->
-            if (size == out.size) {
-                for (value in ch) {
-                    out.send(value, shard)
-                }
-            } else {
-                for (value in ch) {
-                    out.send(value)
-                }
-            }
+        applyRunners(out) { shard, ch ->
+            send(shard, ch.receiveAsFlow(), out)
         }
     }
 }

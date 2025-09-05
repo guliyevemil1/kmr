@@ -34,7 +34,7 @@ fun <T : Any> CoroutineScope.source(
 ): ParallelChannel<T> {
     val chan = ParallelChannel<T>(name, size, capacity, this)
     launch {
-        sourcer.source.collect { chan.send(it) }
+        sourcer.source.collect { chan.send(data = it) }
         chan.close()
     }
     return chan

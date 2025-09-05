@@ -24,11 +24,6 @@ data class Tuple2<U>(
     val second: U,
 ) {
     constructor(u: () -> U) : this(u(), u())
-
-    fun <A : Any, B : Any> apply(x: Tuple2<A>, f: U.(A) -> B): Tuple2<B> = Tuple2(
-        first.f(x.first),
-        second.f(x.second),
-    )
 }
 
 data class Tuple3<U>(
@@ -37,12 +32,6 @@ data class Tuple3<U>(
     val third: U,
 ) {
     constructor(u: () -> U) : this(u(), u(), u())
-
-    fun <A : Any, B : Any> apply(x: Tuple3<A>, f: U.(A) -> B): Tuple3<B> = Tuple3(
-        first.f(x.first),
-        second.f(x.second),
-        third.f(x.third),
-    )
 }
 
 data class Tuple4<U>(
@@ -52,13 +41,6 @@ data class Tuple4<U>(
     val fourth: U,
 ) {
     constructor(u: () -> U) : this(u(), u(), u(), u())
-
-    fun <A : Any, B : Any> apply(x: Tuple4<A>, f: U.(A) -> B): Tuple4<B> = Tuple4(
-        first.f(x.first),
-        second.f(x.second),
-        third.f(x.third),
-        fourth.f(x.fourth),
-    )
 }
 
 data class Tuple5<U>(
@@ -69,12 +51,4 @@ data class Tuple5<U>(
     val fifth: U,
 ) {
     constructor(u: () -> U) : this(u(), u(), u(), u(), u())
-
-    fun <A : Any, B : Any> apply(x: Tuple5<A>, f: U.(A) -> B): Tuple5<B> = Tuple5(
-        first.f(x.first),
-        second.f(x.second),
-        third.f(x.third),
-        fourth.f(x.fourth),
-        fifth.f(x.fifth),
-    )
 }
